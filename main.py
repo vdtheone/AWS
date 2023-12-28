@@ -121,5 +121,42 @@ async def confirmed_sign_up(request: Request):
     )
 
 
+@app.post("/initiate-auth")
+async def initiate_auth_(request: Request):
+    body = await request.body()
+    body_str = body.decode("utf-8")
+    json_body = json.loads(body_str)
+    username = json_body.get('username')
+    password = json_body.get('password')
+    cognito_client = boto3.client("cognito-idp", region_name=COGNITO_REGION)
+
+    try:
+        secret_hash = get_secret_hash(username, CLIENT_ID, CLIENT_SECRET)
+        auth_params = {
+            'AuthFlow': 'USER_PASSWORD_AUTH',
+            'ClientId': CLIENT_ID,
+            'AuthParameters': {
+                'USERNAME': username,
+                'PASSWORD': password,
+                'SECRET_HASH': secret_hash  
+            }
+        }
+
+        response = cognito_client.initiate_auth(**auth_params)
+
+    except cognito_client.exceptions.UsernameExistsException:
+        raise HTTPException(status_code=400, detail="Email address already exists")
+    except cognito_client.exceptions.InvalidPasswordException:
+        raise HTTPException(status_code=400, detail="Invalid password")
+    except cognito_client.exceptions.UserLambdaValidationException:
+        raise HTTPException(status_code=400, detail="Email address already exists")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return JSONResponse(
+        content={"message": "confirmation successfully", "Responce": response}
+    )
+
+
 
     
