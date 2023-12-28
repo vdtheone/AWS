@@ -88,6 +88,38 @@ async def register(
     )
 
 
+@app.post("/confirmed-signup")
+async def confirmed_sign_up(request: Request):
+    body = await request.body()
+    body_str = body.decode("utf-8")
+    json_body = json.loads(body_str)
+    email = json_body.get('email')
+    code = json_body.get('code') 
+    cognito_client = boto3.client("cognito-idp", region_name=COGNITO_REGION)
+
+    try:
+        secret_hash = get_secret_hash(email, CLIENT_ID, CLIENT_SECRET)
+        response = cognito_client.confirm_sign_up(
+            ClientId=CLIENT_ID,
+            SecretHash=secret_hash,
+            Username=email,
+            ConfirmationCode=code,
+            ForceAliasCreation=True|False,
+        )
+
+    except cognito_client.exceptions.UsernameExistsException:
+        raise HTTPException(status_code=400, detail="Email address already exists")
+    except cognito_client.exceptions.InvalidPasswordException:
+        raise HTTPException(status_code=400, detail="Invalid password")
+    except cognito_client.exceptions.UserLambdaValidationException:
+        raise HTTPException(status_code=400, detail="Email address already exists")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return JSONResponse(
+        content={"message": "confirmation successfully", "Responce": response}
+    )
+
 
 
     
