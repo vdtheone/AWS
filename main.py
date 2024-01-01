@@ -1,13 +1,19 @@
 import json
-from fastapi import FastAPI, HTTPException, Form, Depends, Request
+from fastapi import FastAPI, HTTPException, Form, Depends, Request, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 import boto3
-from jose import jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 import hmac
 import hashlib
 import base64
 import os
+import tempfile
+from cognitojwt import jwt_sync
+import urllib.request
+
 from dotenv import load_dotenv
+
+from upload_image import upload_image_to_bucket
 
 load_dotenv()
 
@@ -32,27 +38,43 @@ def get_secret_hash(username, client_id, client_secret):
 
 # Function to get Cognito public key for token validation
 def get_cognito_public_key():
-    cognito_client = boto3.client("cognito-idp", region_name=COGNITO_REGION)
-    response = cognito_client.get_user_pool(UserPoolId=USER_POOL_ID)
-    keys = response["UserPool"]["VerificationMessageTemplate"]["EmailMessageByLink"]
+    keys_url = 'https://cognito-idp.{}.amazonaws.com/{}/.well-known/jwks.json'.format(COGNITO_REGION, USER_POOL_ID)
+    with urllib.request.urlopen(keys_url) as f:
+        response = f.read()
+    keys = json.loads(response.decode('utf-8'))['keys']
     return keys
 
 
 # Function to get public key for token validation
 def get_public_key(kid: str):
     keys = get_cognito_public_key()
-    key = next(key for key in keys if key["KeyId"] == kid)
-    return jwt.algorithms.RSAAlgorithm.from_jwk(key)
+    key = next(key for key in keys if key["kid"] == kid)
+    return key
 
 
 # Function to validate JWT token
+# from fastapi import HTTPException
+# from jose import ExpiredSignatureError, JWTError, jwt
+
 def validate_token(token: str):
     try:
-        payload = jwt.decode(token, get_public_key, algorithms=["RS256"])
+        header = jwt.get_unverified_header(token)
+        kid = header["kid"]  
+        public_key = get_public_key(kid)
+        if not public_key:
+            raise HTTPException(status_code=500, detail="Unable to fetch public key")
+        
+        payload = jwt.decode(token, public_key, algorithms=["RS256"])
         return payload
-    except jwt.JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
+    except ExpiredSignatureError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except HTTPException as e:
+        raise e
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    
 
 # Registration endpoint
 @app.post("/register")
@@ -157,6 +179,50 @@ async def initiate_auth_(request: Request):
         content={"message": "confirmation successfully", "Responce": response}
     )
 
+
+@app.post('/upload-image')
+async def upload_image(request:Request, image: UploadFile = File(...)):
+    try:
+        access_token = request.headers.get("Authorization")
+        if access_token is not None:
+            payload = validate_token(access_token)
+            if payload  is not None:
+                file_name = image.filename
+                username = payload['username']
+                s3_key = f'{username}/{file_name}'
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    contents = await image.read()
+                    temp_file.write(contents)
+                    temp_file_path = temp_file.name
+                return await upload_image_to_bucket(temp_file_path, s3_key)
+        else:
+            raise HTTPException(status_code=401, detail="Invalid authorization header")
+    except ExpiredSignatureError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except HTTPException as e:
+        raise e
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+        
+@app.post("/decode-jwt")
+def decode_jwt(request: Request):
+    try:
+        access_token = request.headers.get("Authorization")
+        if not access_token:
+            raise HTTPException(status_code=401, detail="Invalid authorization header")
+        payload = validate_token(access_token)
+        return {"payload": payload}
+    except ExpiredSignatureError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except HTTPException as e:
+        raise e
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
     
